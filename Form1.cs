@@ -209,7 +209,7 @@ namespace FileBatchPrinterGUI
         private Button btnSearch;
         private CheckedListBox clbFiles;
         private Button btnSelectAll;
-        private Button btnSelectByExt;  // 新增：按后缀选择按钮
+        private Button btnSelectByExt;
         private Button btnPrint;
         private Label lblStatus;
         private Label lblSelectedCount;
@@ -331,7 +331,6 @@ namespace FileBatchPrinterGUI
             btnSelectAll = new Button { Text = "全选", Location = new Point(12, bottomY), Size = new Size(75, 27) };
             btnSelectAll.Click += BtnSelectAll_Click;
 
-            // 新增：按后缀选择按钮
             btnSelectByExt = new Button { Text = "按后缀选择", Location = new Point(95, bottomY), Size = new Size(90, 27) };
             btnSelectByExt.Click += BtnSelectByExt_Click;
 
@@ -363,7 +362,7 @@ namespace FileBatchPrinterGUI
             btnSelectAll.Text = allChecked ? "全选" : "取消全选";
         }
 
-        // 新增：按后缀名批量选择
+        // 按后缀名批量选择
         private void BtnSelectByExt_Click(object sender, EventArgs e)
         {
             if (clbFiles.Items.Count == 0)
@@ -372,15 +371,12 @@ namespace FileBatchPrinterGUI
                 return;
             }
 
-            // 弹出输入对话框，让用户输入后缀名
-            string input = Microsoft.VisualBasic.Interaction.InputBox(
-                "请输入要选择的后缀名（多个用逗号或空格分隔，例如：pdf,jpg,ppt,xlsx）\n\n注意：不需要输入点号，直接输入后缀名即可。",
-                "按后缀选择文件",
-                "pdf,jpg,ppt,xlsx");
+            // 使用自定义输入对话框（避免依赖 Microsoft.VisualBasic）
+            string input = ShowInputDialog("请输入要选择的后缀名（多个用逗号或空格分隔）\n\n示例: pdf,jpg,ppt,xlsx", "按后缀选择文件");
 
             if (string.IsNullOrWhiteSpace(input)) return;
 
-            // 分割后缀名（支持逗号、空格、分号）
+            // 分割后缀名
             string[] extensions = input.Split(new char[] { ',', ' ', ';' }, StringSplitOptions.RemoveEmptyEntries);
             for (int i = 0; i < extensions.Length; i++)
             {
@@ -389,7 +385,6 @@ namespace FileBatchPrinterGUI
                 extensions[i] = ext;
             }
 
-            // 遍历文件列表，勾选匹配后缀的文件
             int selectedCount = 0;
             for (int i = 0; i < clbFiles.Items.Count; i++)
             {
@@ -406,6 +401,54 @@ namespace FileBatchPrinterGUI
 
             lblSelectedCount.Text = $"已选择 {clbFiles.CheckedItems.Count} 个文件";
             lblStatus.Text = $"按后缀选择完成，共选中 {selectedCount} 个文件。";
+        }
+
+        // 自定义输入对话框（避免依赖 Microsoft.VisualBasic）
+        private string ShowInputDialog(string prompt, string title)
+        {
+            Form dialog = new Form();
+            dialog.Text = title;
+            dialog.Size = new Size(400, 160);
+            dialog.StartPosition = FormStartPosition.CenterParent;
+            dialog.FormBorderStyle = FormBorderStyle.FixedDialog;
+            dialog.MaximizeBox = false;
+            dialog.MinimizeBox = false;
+
+            Label lblPrompt = new Label();
+            lblPrompt.Text = prompt;
+            lblPrompt.Location = new Point(12, 15);
+            lblPrompt.Size = new Size(360, 50);
+            lblPrompt.AutoSize = false;
+
+            TextBox txtInput = new TextBox();
+            txtInput.Location = new Point(12, 70);
+            txtInput.Size = new Size(360, 23);
+
+            Button btnOK = new Button();
+            btnOK.Text = "确定";
+            btnOK.Location = new Point(200, 100);
+            btnOK.Size = new Size(80, 25);
+            btnOK.DialogResult = DialogResult.OK;
+
+            Button btnCancel = new Button();
+            btnCancel.Text = "取消";
+            btnCancel.Location = new Point(290, 100);
+            btnCancel.Size = new Size(80, 25);
+            btnCancel.DialogResult = DialogResult.Cancel;
+
+            dialog.Controls.Add(lblPrompt);
+            dialog.Controls.Add(txtInput);
+            dialog.Controls.Add(btnOK);
+            dialog.Controls.Add(btnCancel);
+
+            dialog.AcceptButton = btnOK;
+            dialog.CancelButton = btnCancel;
+
+            if (dialog.ShowDialog() == DialogResult.OK)
+            {
+                return txtInput.Text.Trim();
+            }
+            return "";
         }
 
         private void BtnScan_Click(object sender, EventArgs e)
