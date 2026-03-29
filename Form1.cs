@@ -151,6 +151,7 @@ namespace FileBatchPrinterGUI
                     string expireDateStr = "";
                     bool isActive = true;
 
+                    // 解析 device_code
                     int idx = json.IndexOf("device_code");
                     if (idx > 0)
                     {
@@ -159,6 +160,7 @@ namespace FileBatchPrinterGUI
                         if (start > 0 && end > start) deviceCode = json.Substring(start, end - start);
                     }
 
+                    // 解析 device_name
                     idx = json.IndexOf("device_name");
                     if (idx > 0)
                     {
@@ -167,6 +169,7 @@ namespace FileBatchPrinterGUI
                         if (start > 0 && end > start) deviceName = json.Substring(start, end - start);
                     }
 
+                    // 解析 expire_date
                     idx = json.IndexOf("expire_date");
                     if (idx > 0)
                     {
@@ -175,6 +178,7 @@ namespace FileBatchPrinterGUI
                         if (start > 0 && end > start) expireDateStr = json.Substring(start, end - start);
                     }
 
+                    // 解析 is_active
                     idx = json.IndexOf("is_active");
                     if (idx > 0)
                     {
@@ -224,10 +228,11 @@ namespace FileBatchPrinterGUI
         }
     }
 
-    // ==================== 授权窗口 ====================
+    // ==================== 授权窗口（增加设备名称显示）====================
     public class LicenseDialog : Form
     {
         private Label lblDeviceCode;
+        private Label lblDeviceName;
         private Label lblStatus;
         private Label lblExpireDate;
         private Button btnRefresh;
@@ -236,6 +241,7 @@ namespace FileBatchPrinterGUI
         private string _deviceCode;
         private bool _isValid = false;
         private LicenseCheckResult _currentLicense;
+        private Timer _autoCloseTimer;
 
         public bool IsValid => _isValid;
         public LicenseCheckResult CurrentLicense => _currentLicense;
@@ -252,77 +258,115 @@ namespace FileBatchPrinterGUI
         private void SetupUI()
         {
             this.Text = "授权验证";
-            this.Size = new Size(450, 280);
+            this.Size = new Size(450, 320);  // 增加高度以容纳设备名称
             this.StartPosition = FormStartPosition.CenterScreen;
             this.FormBorderStyle = FormBorderStyle.FixedDialog;
             this.MaximizeBox = false;
             this.MinimizeBox = false;
 
+            int yOffset = 25;
+
+            // 设备码标签
             Label lblTitle = new Label();
             lblTitle.Text = "设备码:";
-            lblTitle.Location = new Point(20, 25);
+            lblTitle.Location = new Point(20, yOffset);
             lblTitle.Size = new Size(60, 23);
             lblTitle.Font = new Font("微软雅黑", 9, FontStyle.Bold);
 
             lblDeviceCode = new Label();
             lblDeviceCode.Text = _deviceCode;
-            lblDeviceCode.Location = new Point(90, 25);
+            lblDeviceCode.Location = new Point(90, yOffset);
             lblDeviceCode.Size = new Size(320, 23);
             lblDeviceCode.Font = new Font("Consolas", 9, FontStyle.Regular);
             lblDeviceCode.BackColor = Color.WhiteSmoke;
             lblDeviceCode.BorderStyle = BorderStyle.FixedSingle;
             lblDeviceCode.TextAlign = ContentAlignment.MiddleLeft;
 
+            yOffset += 40;
+
+            // 设备名称标签
+            Label lblDeviceNameTitle = new Label();
+            lblDeviceNameTitle.Text = "设备名称:";
+            lblDeviceNameTitle.Location = new Point(20, yOffset);
+            lblDeviceNameTitle.Size = new Size(60, 23);
+            lblDeviceNameTitle.Font = new Font("微软雅黑", 9, FontStyle.Bold);
+
+            lblDeviceName = new Label();
+            lblDeviceName.Text = "---";
+            lblDeviceName.Location = new Point(90, yOffset);
+            lblDeviceName.Size = new Size(320, 23);
+            lblDeviceName.Font = new Font("微软雅黑", 9, FontStyle.Regular);
+            lblDeviceName.BackColor = Color.WhiteSmoke;
+            lblDeviceName.BorderStyle = BorderStyle.FixedSingle;
+            lblDeviceName.TextAlign = ContentAlignment.MiddleLeft;
+            lblDeviceName.ForeColor = Color.DarkBlue;
+
+            yOffset += 40;
+
+            // 状态标签
             Label lblStatusTitle = new Label();
             lblStatusTitle.Text = "状态:";
-            lblStatusTitle.Location = new Point(20, 65);
+            lblStatusTitle.Location = new Point(20, yOffset);
             lblStatusTitle.Size = new Size(60, 23);
             lblStatusTitle.Font = new Font("微软雅黑", 9, FontStyle.Bold);
 
             lblStatus = new Label();
             lblStatus.Text = "正在验证...";
-            lblStatus.Location = new Point(90, 65);
+            lblStatus.Location = new Point(90, yOffset);
             lblStatus.Size = new Size(320, 23);
             lblStatus.Font = new Font("微软雅黑", 9, FontStyle.Regular);
             lblStatus.ForeColor = Color.Blue;
 
+            yOffset += 40;
+
+            // 有效期标签
             Label lblExpireTitle = new Label();
             lblExpireTitle.Text = "有效期:";
-            lblExpireTitle.Location = new Point(20, 105);
+            lblExpireTitle.Location = new Point(20, yOffset);
             lblExpireTitle.Size = new Size(60, 23);
             lblExpireTitle.Font = new Font("微软雅黑", 9, FontStyle.Bold);
 
             lblExpireDate = new Label();
             lblExpireDate.Text = "---";
-            lblExpireDate.Location = new Point(90, 105);
+            lblExpireDate.Location = new Point(90, yOffset);
             lblExpireDate.Size = new Size(320, 23);
             lblExpireDate.Font = new Font("微软雅黑", 9, FontStyle.Regular);
 
+            yOffset += 45;
+
+            // 提示信息
             Label lblTip = new Label();
             lblTip.Text = "提示：如果设备未授权，请联系管理员在 Supabase 中添加此设备码。";
-            lblTip.Location = new Point(20, 150);
+            lblTip.Location = new Point(20, yOffset);
             lblTip.Size = new Size(400, 40);
             lblTip.Font = new Font("微软雅黑", 8, FontStyle.Italic);
             lblTip.ForeColor = Color.Gray;
 
+            yOffset += 50;
+
+            // 按钮
             btnRefresh = new Button();
             btnRefresh.Text = "刷新";
-            btnRefresh.Location = new Point(220, 210);
+            btnRefresh.Location = new Point(220, yOffset);
             btnRefresh.Size = new Size(80, 30);
             btnRefresh.FlatStyle = FlatStyle.Flat;
             btnRefresh.BackColor = Color.LightGray;
             btnRefresh.Click += async (s, e) => await CheckLicenseAsync();
+            btnRefresh.Visible = false;  // 初始隐藏
 
             btnClose = new Button();
             btnClose.Text = "关闭";
-            btnClose.Location = new Point(330, 210);
+            btnClose.Location = new Point(330, yOffset);
             btnClose.Size = new Size(80, 30);
             btnClose.FlatStyle = FlatStyle.Flat;
             btnClose.BackColor = Color.LightGray;
             btnClose.Click += (s, e) => this.Close();
+            btnClose.Visible = false;   // 初始隐藏
 
             this.Controls.Add(lblTitle);
             this.Controls.Add(lblDeviceCode);
+            this.Controls.Add(lblDeviceNameTitle);
+            this.Controls.Add(lblDeviceName);
             this.Controls.Add(lblStatusTitle);
             this.Controls.Add(lblStatus);
             this.Controls.Add(lblExpireTitle);
@@ -345,15 +389,47 @@ namespace FileBatchPrinterGUI
             {
                 _isValid = true;
                 _currentLicense = result;
+
+                // 显示设备名称
+                if (!string.IsNullOrEmpty(result.DeviceName))
+                {
+                    lblDeviceName.Text = result.DeviceName;
+                    lblDeviceName.ForeColor = Color.DarkBlue;
+                }
+                else
+                {
+                    lblDeviceName.Text = "未设置";
+                    lblDeviceName.ForeColor = Color.Gray;
+                }
+
                 lblStatus.Text = "✓ 授权有效";
                 lblStatus.ForeColor = Color.Green;
                 lblExpireDate.Text = result.ExpireDate.ToString("yyyy-MM-dd") + " (剩余 " + result.RemainingDays + " 天)";
                 lblExpireDate.ForeColor = result.RemainingDays <= 7 ? Color.Orange : Color.Black;
-                btnRefresh.Text = "进入系统";
+
+                // 授权有效，1秒后自动关闭窗口进入主系统
+                _autoCloseTimer = new Timer();
+                _autoCloseTimer.Interval = 1000;
+                _autoCloseTimer.Tick += (s, e) =>
+                {
+                    _autoCloseTimer.Stop();
+                    this.DialogResult = DialogResult.OK;
+                    this.Close();
+                };
+                _autoCloseTimer.Start();
             }
             else
             {
                 _isValid = false;
+
+                // 显示设备名称（可能为空）
+                lblDeviceName.Text = "未授权设备";
+                lblDeviceName.ForeColor = Color.Gray;
+
+                // 授权失败，显示刷新和关闭按钮
+                btnRefresh.Visible = true;
+                btnClose.Visible = true;
+
                 switch (result.Code)
                 {
                     case "NETWORK_ERROR":
@@ -382,10 +458,8 @@ namespace FileBatchPrinterGUI
                         lblExpireDate.Text = "请点击刷新重试";
                         break;
                 }
-                btnRefresh.Text = "刷新";
+                btnRefresh.Enabled = true;
             }
-
-            btnRefresh.Enabled = true;
         }
     }
 
@@ -448,11 +522,11 @@ namespace FileBatchPrinterGUI
             lblDir.Text = "目录路径:";
             lblDir.Location = new Point(12, 15);
             lblDir.Size = new Size(70, 23);
-            
+
             txtDirectory = new TextBox();
             txtDirectory.Location = new Point(88, 12);
             txtDirectory.Size = new Size(540, 23);
-            
+
             btnScan = new Button();
             btnScan.Text = "扫描";
             btnScan.Location = new Point(634, 10);
@@ -463,11 +537,11 @@ namespace FileBatchPrinterGUI
             lblSearch.Text = "关键词:";
             lblSearch.Location = new Point(12, 50);
             lblSearch.Size = new Size(70, 23);
-            
+
             txtSearch = new TextBox();
             txtSearch.Location = new Point(88, 47);
             txtSearch.Size = new Size(460, 23);
-            
+
             btnSearch = new Button();
             btnSearch.Text = "搜索";
             btnSearch.Location = new Point(554, 45);
@@ -478,7 +552,7 @@ namespace FileBatchPrinterGUI
             lblFiles.Text = "文件列表（勾选要打印的文件）:";
             lblFiles.Location = new Point(12, 85);
             lblFiles.Size = new Size(200, 23);
-            
+
             lblEmail = new Label();
             lblEmail.Text = "Email: guoqiang.w@cn.interplex.com";
             lblEmail.Location = new Point(500, 85);
@@ -494,7 +568,7 @@ namespace FileBatchPrinterGUI
             clbFiles.ItemCheck += ClbFiles_ItemCheck;
 
             int bottomY = 420;
-            
+
             btnSelectAll = new Button();
             btnSelectAll.Text = "全选";
             btnSelectAll.Location = new Point(12, bottomY);
