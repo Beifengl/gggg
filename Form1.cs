@@ -336,7 +336,7 @@ namespace FileBatchPrinterGUI
 
             // 提示信息
             Label lblTip = new Label();
-            lblTip.Text = "提示：如果设备未授权，请联系管理员在 Supabase 中添加此设备码。";
+            lblTip.Text = "提示：如果设备未授权，请联系管理员王国强。";
             lblTip.Location = new Point(20, yOffset);
             lblTip.Size = new Size(400, 40);
             lblTip.Font = new Font("微软雅黑", 8, FontStyle.Italic);
