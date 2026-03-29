@@ -22,7 +22,7 @@ namespace FileBatchPrinterGUI
             string cpuId = GetCpuId();
             string diskId = GetDiskId();
             string mac = GetMacAddress();
-            string rawId = $"{cpuId}|{diskId}|{mac}";
+            string rawId = cpuId + "|" + diskId + "|" + mac;
             return ComputeSHA256(rawId).Substring(0, 16);
         }
 
@@ -102,7 +102,7 @@ namespace FileBatchPrinterGUI
         public string Error { get; set; } = "";
     }
 
-    // ==================== Supabase 授权客户端（使用 HttpClient）====================
+    // ==================== Supabase 授权客户端 ====================
     public class SupabaseLicenseClient
     {
         private readonly HttpClient _httpClient;
@@ -125,35 +125,66 @@ namespace FileBatchPrinterGUI
         {
             try
             {
-                string url = $"{_supabaseUrl}/rest/v1/device_licenses?device_code=eq.{Uri.EscapeDataString(_deviceCode)}&select=*";
+                string url = _supabaseUrl + "/rest/v1/device_licenses?device_code=eq." + Uri.EscapeDataString(_deviceCode) + "&select=*";
 
                 using (var request = new HttpRequestMessage(HttpMethod.Get, url))
                 {
                     request.Headers.Add("apikey", _apiKey);
-                    request.Headers.Add("Authorization", $"Bearer {_apiKey});
+                    request.Headers.Add("Authorization", "Bearer " + _apiKey);
 
                     var response = await _httpClient.SendAsync(request);
                     string json = await response.Content.ReadAsStringAsync();
 
                     if (!response.IsSuccessStatusCode)
                     {
-                        return new LicenseCheckResult { Success = false, Code = "API_ERROR", Error = $"API请求失败: {response.StatusCode} - {json}" };
+                        return new LicenseCheckResult { Success = false, Code = "API_ERROR", Error = "API请求失败: " + response.StatusCode };
                     }
 
-                    // 手动解析 JSON（避免依赖）
-                    var devices = ParseJsonArray(json);
-
-                    if (devices == null || devices.Count == 0)
+                    if (string.IsNullOrWhiteSpace(json) || json == "[]")
                     {
                         return new LicenseCheckResult { Success = false, Code = "NOT_FOUND", Error = "设备未授权", DeviceCode = _deviceCode };
                     }
 
-                    var device = devices[0];
+                    // 简单解析 JSON
+                    string deviceCode = "";
+                    string deviceName = "";
+                    string expireDateStr = "";
+                    bool isActive = true;
 
-                    string deviceCode = GetJsonValue(device, "device_code");
-                    string deviceName = GetJsonValue(device, "device_name");
-                    string expireDateStr = GetJsonValue(device, "expire_date");
-                    bool isActive = GetJsonBool(device, "is_active", true);
+                    int idx = json.IndexOf("device_code");
+                    if (idx > 0)
+                    {
+                        int start = json.IndexOf("\"", idx + 12) + 1;
+                        int end = json.IndexOf("\"", start);
+                        if (start > 0 && end > start) deviceCode = json.Substring(start, end - start);
+                    }
+
+                    idx = json.IndexOf("device_name");
+                    if (idx > 0)
+                    {
+                        int start = json.IndexOf("\"", idx + 12) + 1;
+                        int end = json.IndexOf("\"", start);
+                        if (start > 0 && end > start) deviceName = json.Substring(start, end - start);
+                    }
+
+                    idx = json.IndexOf("expire_date");
+                    if (idx > 0)
+                    {
+                        int start = json.IndexOf("\"", idx + 12) + 1;
+                        int end = json.IndexOf("\"", start);
+                        if (start > 0 && end > start) expireDateStr = json.Substring(start, end - start);
+                    }
+
+                    idx = json.IndexOf("is_active");
+                    if (idx > 0)
+                    {
+                        int start = idx + 11;
+                        while (start < json.Length && json[start] == ' ') start++;
+                        if (start < json.Length)
+                        {
+                            isActive = json[start] == 't';
+                        }
+                    }
 
                     if (!isActive)
                     {
@@ -165,7 +196,7 @@ namespace FileBatchPrinterGUI
                         var remainingDays = (expireDate - DateTime.Today).Days;
                         if (remainingDays < 0)
                         {
-                            return new LicenseCheckResult { Success = false, Code = "EXPIRED", Error = $"授权已于 {expireDate:yyyy-MM-dd} 过期", ExpireDate = expireDate };
+                            return new LicenseCheckResult { Success = false, Code = "EXPIRED", Error = "授权已于 " + expireDate.ToString("yyyy-MM-dd") + " 过期", ExpireDate = expireDate };
                         }
 
                         return new LicenseCheckResult
@@ -184,93 +215,12 @@ namespace FileBatchPrinterGUI
             }
             catch (HttpRequestException ex)
             {
-                return new LicenseCheckResult { Success = false, Code = "NETWORK_ERROR", Error = $"网络连接失败: {ex.Message}" };
+                return new LicenseCheckResult { Success = false, Code = "NETWORK_ERROR", Error = "网络连接失败: " + ex.Message };
             }
             catch (Exception ex)
             {
                 return new LicenseCheckResult { Success = false, Code = "UNKNOWN_ERROR", Error = ex.Message };
             }
-        }
-
-        // 简单 JSON 解析器
-        private List<Dictionary<string, string>> ParseJsonArray(string json)
-        {
-            var result = new List<Dictionary<string, string>>();
-            if (string.IsNullOrWhiteSpace(json) || json == "[]") return result;
-
-            json = json.Trim();
-            if (json.StartsWith("[")) json = json.Substring(1);
-            if (json.EndsWith("]")) json = json.Substring(0, json.Length - 1);
-
-            int depth = 0;
-            int start = 0;
-            for (int i = 0; i < json.Length; i++)
-            {
-                if (json[i] == '{') depth++;
-                if (json[i] == '}') depth--;
-                if (depth == 0 && json[i] == '}')
-                {
-                    string objJson = json.Substring(start, i - start + 1);
-                    result.Add(ParseJsonObject(objJson));
-                    start = i + 1;
-                    if (start < json.Length && json[start] == ',') start++;
-                }
-            }
-            return result;
-        }
-
-        private Dictionary<string, string> ParseJsonObject(string json)
-        {
-            var dict = new Dictionary<string, string>();
-            json = json.Trim();
-            if (json.StartsWith("{")) json = json.Substring(1);
-            if (json.EndsWith("}")) json = json.Substring(0, json.Length - 1);
-
-            int pos = 0;
-            while (pos < json.Length)
-            {
-                while (pos < json.Length && json[pos] == ' ') pos++;
-                if (pos >= json.Length) break;
-
-                int keyStart = pos;
-                while (pos < json.Length && json[pos] != ':') pos++;
-                string key = json.Substring(keyStart, pos - keyStart).Trim('\"');
-                pos++;
-
-                while (pos < json.Length && json[pos] == ' ') pos++;
-
-                string value;
-                if (json[pos] == '\"')
-                {
-                    int valueStart = ++pos;
-                    while (pos < json.Length && json[pos] != '\"') pos++;
-                    value = json.Substring(valueStart, pos - valueStart);
-                    pos++;
-                }
-                else
-                {
-                    int valueStart = pos;
-                    while (pos < json.Length && json[pos] != ',' && json[pos] != '}') pos++;
-                    value = json.Substring(valueStart, pos - valueStart).Trim();
-                }
-
-                dict[key] = value;
-
-                while (pos < json.Length && (json[pos] == ',' || json[pos] == ' ')) pos++;
-            }
-            return dict;
-        }
-
-        private string GetJsonValue(Dictionary<string, string> dict, string key)
-        {
-            return dict.ContainsKey(key) ? dict[key] : "";
-        }
-
-        private bool GetJsonBool(Dictionary<string, string> dict, string key, bool defaultValue)
-        {
-            if (!dict.ContainsKey(key)) return defaultValue;
-            string val = dict[key].ToLower();
-            return val == "true" || val == "1";
         }
     }
 
@@ -308,21 +258,67 @@ namespace FileBatchPrinterGUI
             this.MaximizeBox = false;
             this.MinimizeBox = false;
 
-            Label lblTitle = new Label { Text = "设备码:", Location = new Point(20, 25), Size = new Size(60, 23), Font = new Font("微软雅黑", 9, FontStyle.Bold) };
-            lblDeviceCode = new Label { Text = _deviceCode, Location = new Point(90, 25), Size = new Size(320, 23), Font = new Font("Consolas", 9, FontStyle.Regular), BackColor = Color.WhiteSmoke, BorderStyle = BorderStyle.FixedSingle, TextAlign = ContentAlignment.MiddleLeft };
+            Label lblTitle = new Label();
+            lblTitle.Text = "设备码:";
+            lblTitle.Location = new Point(20, 25);
+            lblTitle.Size = new Size(60, 23);
+            lblTitle.Font = new Font("微软雅黑", 9, FontStyle.Bold);
 
-            Label lblStatusTitle = new Label { Text = "状态:", Location = new Point(20, 65), Size = new Size(60, 23), Font = new Font("微软雅黑", 9, FontStyle.Bold) };
-            lblStatus = new Label { Text = "正在验证...", Location = new Point(90, 65), Size = new Size(320, 23), Font = new Font("微软雅黑", 9, FontStyle.Regular), ForeColor = Color.Blue };
+            lblDeviceCode = new Label();
+            lblDeviceCode.Text = _deviceCode;
+            lblDeviceCode.Location = new Point(90, 25);
+            lblDeviceCode.Size = new Size(320, 23);
+            lblDeviceCode.Font = new Font("Consolas", 9, FontStyle.Regular);
+            lblDeviceCode.BackColor = Color.WhiteSmoke;
+            lblDeviceCode.BorderStyle = BorderStyle.FixedSingle;
+            lblDeviceCode.TextAlign = ContentAlignment.MiddleLeft;
 
-            Label lblExpireTitle = new Label { Text = "有效期:", Location = new Point(20, 105), Size = new Size(60, 23), Font = new Font("微软雅黑", 9, FontStyle.Bold) };
-            lblExpireDate = new Label { Text = "---", Location = new Point(90, 105), Size = new Size(320, 23), Font = new Font("微软雅黑", 9, FontStyle.Regular) };
+            Label lblStatusTitle = new Label();
+            lblStatusTitle.Text = "状态:";
+            lblStatusTitle.Location = new Point(20, 65);
+            lblStatusTitle.Size = new Size(60, 23);
+            lblStatusTitle.Font = new Font("微软雅黑", 9, FontStyle.Bold);
 
-            Label lblTip = new Label { Text = "提示：如果设备未授权，请联系管理员在 Supabase 中添加此设备码。", Location = new Point(20, 150), Size = new Size(400, 40), Font = new Font("微软雅黑", 8, FontStyle.Italic), ForeColor = Color.Gray };
+            lblStatus = new Label();
+            lblStatus.Text = "正在验证...";
+            lblStatus.Location = new Point(90, 65);
+            lblStatus.Size = new Size(320, 23);
+            lblStatus.Font = new Font("微软雅黑", 9, FontStyle.Regular);
+            lblStatus.ForeColor = Color.Blue;
 
-            btnRefresh = new Button { Text = "刷新", Location = new Point(220, 210), Size = new Size(80, 30), FlatStyle = FlatStyle.Flat, BackColor = Color.LightGray };
+            Label lblExpireTitle = new Label();
+            lblExpireTitle.Text = "有效期:";
+            lblExpireTitle.Location = new Point(20, 105);
+            lblExpireTitle.Size = new Size(60, 23);
+            lblExpireTitle.Font = new Font("微软雅黑", 9, FontStyle.Bold);
+
+            lblExpireDate = new Label();
+            lblExpireDate.Text = "---";
+            lblExpireDate.Location = new Point(90, 105);
+            lblExpireDate.Size = new Size(320, 23);
+            lblExpireDate.Font = new Font("微软雅黑", 9, FontStyle.Regular);
+
+            Label lblTip = new Label();
+            lblTip.Text = "提示：如果设备未授权，请联系管理员在 Supabase 中添加此设备码。";
+            lblTip.Location = new Point(20, 150);
+            lblTip.Size = new Size(400, 40);
+            lblTip.Font = new Font("微软雅黑", 8, FontStyle.Italic);
+            lblTip.ForeColor = Color.Gray;
+
+            btnRefresh = new Button();
+            btnRefresh.Text = "刷新";
+            btnRefresh.Location = new Point(220, 210);
+            btnRefresh.Size = new Size(80, 30);
+            btnRefresh.FlatStyle = FlatStyle.Flat;
+            btnRefresh.BackColor = Color.LightGray;
             btnRefresh.Click += async (s, e) => await CheckLicenseAsync();
 
-            btnClose = new Button { Text = "关闭", Location = new Point(330, 210), Size = new Size(80, 30), FlatStyle = FlatStyle.Flat, BackColor = Color.LightGray };
+            btnClose = new Button();
+            btnClose.Text = "关闭";
+            btnClose.Location = new Point(330, 210);
+            btnClose.Size = new Size(80, 30);
+            btnClose.FlatStyle = FlatStyle.Flat;
+            btnClose.BackColor = Color.LightGray;
             btnClose.Click += (s, e) => this.Close();
 
             this.Controls.Add(lblTitle);
@@ -351,7 +347,7 @@ namespace FileBatchPrinterGUI
                 _currentLicense = result;
                 lblStatus.Text = "✓ 授权有效";
                 lblStatus.ForeColor = Color.Green;
-                lblExpireDate.Text = $"{result.ExpireDate:yyyy-MM-dd} (剩余 {result.RemainingDays} 天)";
+                lblExpireDate.Text = result.ExpireDate.ToString("yyyy-MM-dd") + " (剩余 " + result.RemainingDays + " 天)";
                 lblExpireDate.ForeColor = result.RemainingDays <= 7 ? Color.Orange : Color.Black;
                 btnRefresh.Text = "进入系统";
             }
@@ -373,7 +369,7 @@ namespace FileBatchPrinterGUI
                     case "EXPIRED":
                         lblStatus.Text = "✗ 授权已过期";
                         lblStatus.ForeColor = Color.Red;
-                        lblExpireDate.Text = $"已于 {result.ExpireDate:yyyy-MM-dd} 过期";
+                        lblExpireDate.Text = "已于 " + result.ExpireDate.ToString("yyyy-MM-dd") + " 过期";
                         break;
                     case "INACTIVE":
                         lblStatus.Text = "✗ 设备已被禁用";
@@ -381,7 +377,7 @@ namespace FileBatchPrinterGUI
                         lblExpireDate.Text = "请联系管理员启用";
                         break;
                     default:
-                        lblStatus.Text = $"✗ {result.Error}";
+                        lblStatus.Text = "✗ " + result.Error;
                         lblStatus.ForeColor = Color.Red;
                         lblExpireDate.Text = "请点击刷新重试";
                         break;
@@ -397,11 +393,7 @@ namespace FileBatchPrinterGUI
     public partial class Form1 : Form
     {
         private List<string> filesList = new List<string>();
-        private readonly List<string> supportPrintExts = new List<string>
-        {
-            ".txt", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
-            ".pdf", ".jpg", ".jpeg", ".png", ".bmp", ".tiff"
-        };
+        private readonly List<string> supportPrintExts = new List<string>();
 
         private TextBox txtDirectory;
         private Button btnScan;
@@ -424,6 +416,9 @@ namespace FileBatchPrinterGUI
 
         public Form1()
         {
+            // 初始化支持的后缀列表
+            supportPrintExts.AddRange(new string[] { ".txt", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".pdf", ".jpg", ".jpeg", ".png", ".bmp", ".tiff" });
+
             string deviceCode = DeviceIdGenerator.GetDeviceId();
             using (var licenseDialog = new LicenseDialog(SUPABASE_URL, SUPABASE_ANON_KEY, deviceCode))
             {
@@ -437,7 +432,6 @@ namespace FileBatchPrinterGUI
             }
 
             InitializeComponent();
-            LoadCustomIcon();
             SetupUI();
         }
 
@@ -448,70 +442,122 @@ namespace FileBatchPrinterGUI
             this.StartPosition = FormStartPosition.CenterScreen;
         }
 
-        private void LoadCustomIcon()
-        {
-            try
-            {
-                string iconPath = Path.Combine(Application.StartupPath, "Print.ico");
-                if (File.Exists(iconPath)) this.Icon = new Icon(iconPath);
-            }
-            catch { }
-        }
-
         private void SetupUI()
         {
-            Label lblDir = new Label { Text = "目录路径:", Location = new Point(12, 15), Size = new Size(70, 23) };
-            txtDirectory = new TextBox { Location = new Point(88, 12), Size = new Size(540, 23) };
-            btnScan = new Button { Text = "扫描", Location = new Point(634, 10), Size = new Size(75, 27) };
+            Label lblDir = new Label();
+            lblDir.Text = "目录路径:";
+            lblDir.Location = new Point(12, 15);
+            lblDir.Size = new Size(70, 23);
+            
+            txtDirectory = new TextBox();
+            txtDirectory.Location = new Point(88, 12);
+            txtDirectory.Size = new Size(540, 23);
+            
+            btnScan = new Button();
+            btnScan.Text = "扫描";
+            btnScan.Location = new Point(634, 10);
+            btnScan.Size = new Size(75, 27);
             btnScan.Click += BtnScan_Click;
 
-            Label lblSearch = new Label { Text = "关键词:", Location = new Point(12, 50), Size = new Size(70, 23) };
-            txtSearch = new TextBox { Location = new Point(88, 47), Size = new Size(460, 23) };
-            btnSearch = new Button { Text = "搜索", Location = new Point(554, 45), Size = new Size(75, 27) };
+            Label lblSearch = new Label();
+            lblSearch.Text = "关键词:";
+            lblSearch.Location = new Point(12, 50);
+            lblSearch.Size = new Size(70, 23);
+            
+            txtSearch = new TextBox();
+            txtSearch.Location = new Point(88, 47);
+            txtSearch.Size = new Size(460, 23);
+            
+            btnSearch = new Button();
+            btnSearch.Text = "搜索";
+            btnSearch.Location = new Point(554, 45);
+            btnSearch.Size = new Size(75, 27);
             btnSearch.Click += BtnSearch_Click;
 
-            Label lblFiles = new Label { Text = "文件列表（勾选要打印的文件）:", Location = new Point(12, 85), Size = new Size(200, 23) };
-            lblEmail = new Label { Text = "Email: guoqiang.w@cn.interplex.com", Location = new Point(500, 85), Size = new Size(250, 23), ForeColor = Color.Green };
+            Label lblFiles = new Label();
+            lblFiles.Text = "文件列表（勾选要打印的文件）:";
+            lblFiles.Location = new Point(12, 85);
+            lblFiles.Size = new Size(200, 23);
+            
+            lblEmail = new Label();
+            lblEmail.Text = "Email: guoqiang.w@cn.interplex.com";
+            lblEmail.Location = new Point(500, 85);
+            lblEmail.Size = new Size(250, 23);
+            lblEmail.ForeColor = Color.Green;
 
-            clbFiles = new CheckedListBox
-            {
-                Location = new Point(12, 110),
-                Size = new Size(760, 300),
-                CheckOnClick = true,
-                HorizontalScrollbar = true
-            };
+            clbFiles = new CheckedListBox();
+            clbFiles.Location = new Point(12, 110);
+            clbFiles.Size = new Size(760, 300);
+            clbFiles.CheckOnClick = true;
+            clbFiles.HorizontalScrollbar = true;
             clbFiles.Format += (s, e) => { if (e.ListItem is string path) e.Value = Path.GetFileName(path); };
             clbFiles.ItemCheck += ClbFiles_ItemCheck;
 
             int bottomY = 420;
-            btnSelectAll = new Button { Text = "全选", Location = new Point(12, bottomY), Size = new Size(75, 27) };
+            
+            btnSelectAll = new Button();
+            btnSelectAll.Text = "全选";
+            btnSelectAll.Location = new Point(12, bottomY);
+            btnSelectAll.Size = new Size(75, 27);
             btnSelectAll.Click += BtnSelectAll_Click;
 
-            btnSelectByExt = new Button { Text = "按后缀选择", Location = new Point(95, bottomY), Size = new Size(90, 27) };
+            btnSelectByExt = new Button();
+            btnSelectByExt.Text = "按后缀选择";
+            btnSelectByExt.Location = new Point(95, bottomY);
+            btnSelectByExt.Size = new Size(90, 27);
             btnSelectByExt.Click += BtnSelectByExt_Click;
 
-            lblSelectedCount = new Label { Text = "已选择 0 个文件", Location = new Point(195, bottomY + 2), Size = new Size(120, 23) };
-            lblAuthorVersion = new Label { Text = "作者:王国强 Rev.A01", Location = new Point(325, bottomY + 2), Size = new Size(150, 23), ForeColor = Color.DarkBlue, Font = new Font("Segoe UI", 9, FontStyle.Bold) };
+            lblSelectedCount = new Label();
+            lblSelectedCount.Text = "已选择 0 个文件";
+            lblSelectedCount.Location = new Point(195, bottomY + 2);
+            lblSelectedCount.Size = new Size(120, 23);
 
-            lblExpireDate = new Label
-            {
-                Text = $"授权至:{_currentLicense.ExpireDate:yyyy-MM-dd} (剩余 {_currentLicense.RemainingDays} 天)",
-                Location = new Point(480, bottomY + 2),
-                Size = new Size(180, 23),
-                ForeColor = _currentLicense.RemainingDays <= 7 ? Color.Orange : Color.Green
-            };
+            lblAuthorVersion = new Label();
+            lblAuthorVersion.Text = "作者:王国强 Rev.A01";
+            lblAuthorVersion.Location = new Point(325, bottomY + 2);
+            lblAuthorVersion.Size = new Size(150, 23);
+            lblAuthorVersion.ForeColor = Color.DarkBlue;
+            lblAuthorVersion.Font = new Font("Segoe UI", 9, FontStyle.Bold);
 
-            btnPrint = new Button { Text = "批量打印", Location = new Point(690, bottomY), Size = new Size(90, 27) };
+            lblExpireDate = new Label();
+            lblExpireDate.Text = "授权至:" + _currentLicense.ExpireDate.ToString("yyyy-MM-dd") + " (剩余 " + _currentLicense.RemainingDays + " 天)";
+            lblExpireDate.Location = new Point(480, bottomY + 2);
+            lblExpireDate.Size = new Size(180, 23);
+            lblExpireDate.ForeColor = _currentLicense.RemainingDays <= 7 ? Color.Orange : Color.Green;
+
+            btnPrint = new Button();
+            btnPrint.Text = "批量打印";
+            btnPrint.Location = new Point(690, bottomY);
+            btnPrint.Size = new Size(90, 27);
             btnPrint.Click += BtnPrint_Click;
 
-            lblStatus = new Label { Text = "就绪", Location = new Point(12, bottomY + 40), Size = new Size(760, 50), BorderStyle = BorderStyle.Fixed3D };
+            lblStatus = new Label();
+            lblStatus.Text = "就绪";
+            lblStatus.Location = new Point(12, bottomY + 40);
+            lblStatus.Size = new Size(760, 50);
+            lblStatus.BorderStyle = BorderStyle.Fixed3D;
 
-            this.Controls.AddRange(new Control[] { lblDir, txtDirectory, btnScan, lblSearch, txtSearch, btnSearch, lblFiles, lblEmail, clbFiles, btnSelectAll, btnSelectByExt, lblSelectedCount, lblAuthorVersion, lblExpireDate, btnPrint, lblStatus });
+            this.Controls.Add(lblDir);
+            this.Controls.Add(txtDirectory);
+            this.Controls.Add(btnScan);
+            this.Controls.Add(lblSearch);
+            this.Controls.Add(txtSearch);
+            this.Controls.Add(btnSearch);
+            this.Controls.Add(lblFiles);
+            this.Controls.Add(lblEmail);
+            this.Controls.Add(clbFiles);
+            this.Controls.Add(btnSelectAll);
+            this.Controls.Add(btnSelectByExt);
+            this.Controls.Add(lblSelectedCount);
+            this.Controls.Add(lblAuthorVersion);
+            this.Controls.Add(lblExpireDate);
+            this.Controls.Add(btnPrint);
+            this.Controls.Add(lblStatus);
         }
 
         private void ClbFiles_ItemCheck(object sender, ItemCheckEventArgs e)
         {
-            this.BeginInvoke((MethodInvoker)(() => { lblSelectedCount.Text = $"已选择 {clbFiles.CheckedItems.Count} 个文件"; }));
+            this.BeginInvoke((MethodInvoker)(() => { lblSelectedCount.Text = "已选择 " + clbFiles.CheckedItems.Count + " 个文件"; }));
         }
 
         private void BtnSelectAll_Click(object sender, EventArgs e)
@@ -556,8 +602,8 @@ namespace FileBatchPrinterGUI
                 }
             }
 
-            lblSelectedCount.Text = $"已选择 {clbFiles.CheckedItems.Count} 个文件";
-            lblStatus.Text = $"按后缀选择完成，共选中 {selectedCount} 个文件。";
+            lblSelectedCount.Text = "已选择 " + clbFiles.CheckedItems.Count + " 个文件";
+            lblStatus.Text = "按后缀选择完成，共选中 " + selectedCount + " 个文件。";
         }
 
         private string ShowInputDialog(string prompt, string title)
@@ -632,7 +678,7 @@ namespace FileBatchPrinterGUI
                     }
                     if (count % 10 == 0) Application.DoEvents();
                 }
-                lblStatus.Text = $"扫描完成！共找到 {filesList.Count} 个可打印文件。";
+                lblStatus.Text = "扫描完成！共找到 " + filesList.Count + " 个可打印文件。";
                 lblSelectedCount.Text = "已选择 0 个文件";
                 btnSelectAll.Text = "全选";
             }
@@ -640,7 +686,7 @@ namespace FileBatchPrinterGUI
             {
                 filesList.Clear();
                 clbFiles.Items.Clear();
-                lblStatus.Text = $"扫描出错: {ex.Message}";
+                lblStatus.Text = "扫描出错: " + ex.Message;
             }
         }
 
@@ -682,8 +728,8 @@ namespace FileBatchPrinterGUI
             clbFiles.Items.Clear();
             foreach (string file in results) clbFiles.Items.Add(file);
 
-            lblStatus.Text = $"搜索完成，关键词数：{keywordList.Length}，匹配文件数：{results.Count}";
-            lblSelectedCount.Text = $"已选择 {clbFiles.CheckedItems.Count} 个文件";
+            lblStatus.Text = "搜索完成，关键词数：" + keywordList.Length + "，匹配文件数：" + results.Count;
+            lblSelectedCount.Text = "已选择 " + clbFiles.CheckedItems.Count + " 个文件";
         }
 
         private void PrintTextFile(string filePath)
@@ -747,16 +793,17 @@ namespace FileBatchPrinterGUI
                 catch (Exception ex)
                 {
                     fail++;
-                    lblStatus.Text = $"打印失败: {Path.GetFileName(file)} - {ex.Message}";
+                    lblStatus.Text = "打印失败: " + Path.GetFileName(file) + " - " + ex.Message;
                     Application.DoEvents();
                 }
             }
 
-            lblStatus.Text = $"打印任务提交完成！成功: {success}, 失败: {fail}。";
-            MessageBox.Show($"打印完成！成功 {success} 个，失败 {fail} 个。", "完成", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            lblStatus.Text = "打印任务提交完成！成功: " + success + ", 失败: " + fail + "。";
+            MessageBox.Show("打印完成！成功 " + success + " 个，失败 " + fail + " 个。", "完成", MessageBoxButtons.OK, MessageBoxIcon.Information);
         }
     }
 
+    // ==================== 程序入口 ====================
     internal static class Program
     {
         [STAThread]
