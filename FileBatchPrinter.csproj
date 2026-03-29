@@ -5,10 +5,18 @@
     <UseWindowsForms>true</UseWindowsForms>
     <LangVersion>7.3</LangVersion>
     <Nullable>disable</Nullable>
+    <ApplicationIcon>print.ico</ApplicationIcon>
   </PropertyGroup>
 
   <ItemGroup>
     <PackageReference Include="System.Management" Version="8.0.0" />
     <PackageReference Include="System.Net.Http" Version="4.3.4" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="print.ico" />
+    <Content Include="print.ico">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
   </ItemGroup>
 </Project>

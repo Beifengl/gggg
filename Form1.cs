@@ -7,6 +7,7 @@ using System.IO;
 using System.Linq;
 using System.Management;
 using System.Net.Http;
+using System.Reflection;
 using System.Security.Cryptography;
 using System.Text;
 using System.Threading.Tasks;
@@ -151,7 +152,6 @@ namespace FileBatchPrinterGUI
                     string expireDateStr = "";
                     bool isActive = true;
 
-                    // 解析 device_code
                     int idx = json.IndexOf("device_code");
                     if (idx > 0)
                     {
@@ -160,7 +160,6 @@ namespace FileBatchPrinterGUI
                         if (start > 0 && end > start) deviceCode = json.Substring(start, end - start);
                     }
 
-                    // 解析 device_name
                     idx = json.IndexOf("device_name");
                     if (idx > 0)
                     {
@@ -169,7 +168,6 @@ namespace FileBatchPrinterGUI
                         if (start > 0 && end > start) deviceName = json.Substring(start, end - start);
                     }
 
-                    // 解析 expire_date
                     idx = json.IndexOf("expire_date");
                     if (idx > 0)
                     {
@@ -178,7 +176,6 @@ namespace FileBatchPrinterGUI
                         if (start > 0 && end > start) expireDateStr = json.Substring(start, end - start);
                     }
 
-                    // 解析 is_active
                     idx = json.IndexOf("is_active");
                     if (idx > 0)
                     {
@@ -228,7 +225,7 @@ namespace FileBatchPrinterGUI
         }
     }
 
-    // ==================== 授权窗口（增加设备名称显示）====================
+    // ==================== 授权窗口 ====================
     public class LicenseDialog : Form
     {
         private Label lblDeviceCode;
@@ -258,7 +255,7 @@ namespace FileBatchPrinterGUI
         private void SetupUI()
         {
             this.Text = "授权验证";
-            this.Size = new Size(450, 320);  // 增加高度以容纳设备名称
+            this.Size = new Size(450, 320);
             this.StartPosition = FormStartPosition.CenterScreen;
             this.FormBorderStyle = FormBorderStyle.FixedDialog;
             this.MaximizeBox = false;
@@ -266,7 +263,6 @@ namespace FileBatchPrinterGUI
 
             int yOffset = 25;
 
-            // 设备码标签
             Label lblTitle = new Label();
             lblTitle.Text = "设备码:";
             lblTitle.Location = new Point(20, yOffset);
@@ -284,7 +280,6 @@ namespace FileBatchPrinterGUI
 
             yOffset += 40;
 
-            // 设备名称标签
             Label lblDeviceNameTitle = new Label();
             lblDeviceNameTitle.Text = "设备名称:";
             lblDeviceNameTitle.Location = new Point(20, yOffset);
@@ -303,7 +298,6 @@ namespace FileBatchPrinterGUI
 
             yOffset += 40;
 
-            // 状态标签
             Label lblStatusTitle = new Label();
             lblStatusTitle.Text = "状态:";
             lblStatusTitle.Location = new Point(20, yOffset);
@@ -319,7 +313,6 @@ namespace FileBatchPrinterGUI
 
             yOffset += 40;
 
-            // 有效期标签
             Label lblExpireTitle = new Label();
             lblExpireTitle.Text = "有效期:";
             lblExpireTitle.Location = new Point(20, yOffset);
@@ -334,9 +327,8 @@ namespace FileBatchPrinterGUI
 
             yOffset += 45;
 
-            // 提示信息
             Label lblTip = new Label();
-            lblTip.Text = "提示：如果设备未授权，请联系管理员王国强。";
+            lblTip.Text = "提示：如果设备未授权，请联系管理员在 Supabase 中添加此设备码。";
             lblTip.Location = new Point(20, yOffset);
             lblTip.Size = new Size(400, 40);
             lblTip.Font = new Font("微软雅黑", 8, FontStyle.Italic);
@@ -344,7 +336,6 @@ namespace FileBatchPrinterGUI
 
             yOffset += 50;
 
-            // 按钮
             btnRefresh = new Button();
             btnRefresh.Text = "刷新";
             btnRefresh.Location = new Point(220, yOffset);
@@ -352,7 +343,7 @@ namespace FileBatchPrinterGUI
             btnRefresh.FlatStyle = FlatStyle.Flat;
             btnRefresh.BackColor = Color.LightGray;
             btnRefresh.Click += async (s, e) => await CheckLicenseAsync();
-            btnRefresh.Visible = false;  // 初始隐藏
+            btnRefresh.Visible = false;
 
             btnClose = new Button();
             btnClose.Text = "关闭";
@@ -361,7 +352,7 @@ namespace FileBatchPrinterGUI
             btnClose.FlatStyle = FlatStyle.Flat;
             btnClose.BackColor = Color.LightGray;
             btnClose.Click += (s, e) => this.Close();
-            btnClose.Visible = false;   // 初始隐藏
+            btnClose.Visible = false;
 
             this.Controls.Add(lblTitle);
             this.Controls.Add(lblDeviceCode);
@@ -390,7 +381,6 @@ namespace FileBatchPrinterGUI
                 _isValid = true;
                 _currentLicense = result;
 
-                // 显示设备名称
                 if (!string.IsNullOrEmpty(result.DeviceName))
                 {
                     lblDeviceName.Text = result.DeviceName;
@@ -407,7 +397,6 @@ namespace FileBatchPrinterGUI
                 lblExpireDate.Text = result.ExpireDate.ToString("yyyy-MM-dd") + " (剩余 " + result.RemainingDays + " 天)";
                 lblExpireDate.ForeColor = result.RemainingDays <= 7 ? Color.Orange : Color.Black;
 
-                // 授权有效，1秒后自动关闭窗口进入主系统
                 _autoCloseTimer = new Timer();
                 _autoCloseTimer.Interval = 1000;
                 _autoCloseTimer.Tick += (s, e) =>
@@ -422,11 +411,9 @@ namespace FileBatchPrinterGUI
             {
                 _isValid = false;
 
-                // 显示设备名称（可能为空）
                 lblDeviceName.Text = "未授权设备";
                 lblDeviceName.ForeColor = Color.Gray;
 
-                // 授权失败，显示刷新和关闭按钮
                 btnRefresh.Visible = true;
                 btnClose.Visible = true;
 
@@ -490,7 +477,6 @@ namespace FileBatchPrinterGUI
 
         public Form1()
         {
-            // 初始化支持的后缀列表
             supportPrintExts.AddRange(new string[] { ".txt", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".pdf", ".jpg", ".jpeg", ".png", ".bmp", ".tiff" });
 
             string deviceCode = DeviceIdGenerator.GetDeviceId();
@@ -506,6 +492,7 @@ namespace FileBatchPrinterGUI
             }
 
             InitializeComponent();
+            LoadCustomIcon();
             SetupUI();
         }
 
@@ -514,6 +501,37 @@ namespace FileBatchPrinterGUI
             this.Text = "检验表批量打印工具";
             this.Size = new Size(800, 590);
             this.StartPosition = FormStartPosition.CenterScreen;
+        }
+
+        private void LoadCustomIcon()
+        {
+            try
+            {
+                // 从嵌入资源加载图标
+                string[] resources = Assembly.GetExecutingAssembly().GetManifestResourceNames();
+                foreach (string res in resources)
+                {
+                    if (res.ToLower().EndsWith(".ico"))
+                    {
+                        using (var stream = Assembly.GetExecutingAssembly().GetManifestResourceStream(res))
+                        {
+                            if (stream != null)
+                            {
+                                this.Icon = new Icon(stream);
+                                return;
+                            }
+                        }
+                    }
+                }
+
+                // 备用：从外部文件加载
+                string iconPath = Path.Combine(Application.StartupPath, "print.ico");
+                if (File.Exists(iconPath))
+                {
+                    this.Icon = new Icon(iconPath);
+                }
+            }
+            catch { }
         }
 
         private void SetupUI()
