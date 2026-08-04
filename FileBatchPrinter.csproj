@@ -5,9 +5,15 @@
     <UseWindowsForms>true</UseWindowsForms>
     <LangVersion>7.3</LangVersion>
     <Nullable>disable</Nullable>
+    <!-- 禁用调试信息，减小体积 -->
+    <DebugType>none</DebugType>
+    <DebugSymbols>false</DebugSymbols>
+    <!-- 优化代码 -->
+    <Optimize>true</Optimize>
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="System.Management" Version="8.0.0" />
+    <!-- 使用稳定旧版本，减少误报 -->
+    <PackageReference Include="System.Management" Version="4.7.0" />
   </ItemGroup>
 </Project>
