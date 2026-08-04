@@ -1,0 +1,855 @@
+using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.Drawing;
+using System.Drawing.Printing;
+using System.IO;
+using System.Linq;
+using System.Management;
+using System.Security.Cryptography;
+using System.Text;
+using System.Windows.Forms;
+
+namespace FileBatchPrinterGUI
+{
+    public static class DeviceIdGenerator
+    {
+        public static string GetDeviceId()
+        {
+            string cpuId = GetCpuId();
+            string diskId = GetDiskId();
+            string mac = GetMacAddress();
+            string rawId = cpuId + "|" + diskId + "|" + mac;
+            return ComputeSHA256(rawId).Substring(0, 16);
+        }
+
+        private static string GetCpuId()
+        {
+            try
+            {
+                using (var searcher = new ManagementObjectSearcher("SELECT ProcessorId FROM Win32_Processor"))
+                {
+                    foreach (ManagementObject obj in searcher.Get())
+                    {
+                        string id = obj["ProcessorId"]?.ToString();
+                        if (!string.IsNullOrEmpty(id)) return id;
+                    }
+                }
+            }
+            catch { }
+            return "CPU_UNKNOWN";
+        }
+
+        private static string GetDiskId()
+        {
+            try
+            {
+                using (var searcher = new ManagementObjectSearcher("SELECT SerialNumber FROM Win32_DiskDrive WHERE Index=0"))
+                {
+                    foreach (ManagementObject obj in searcher.Get())
+                    {
+                        string id = obj["SerialNumber"]?.ToString();
+                        if (!string.IsNullOrEmpty(id)) return id;
+                    }
+                }
+            }
+            catch { }
+            return "DISK_UNKNOWN";
+        }
+
+        private static string GetMacAddress()
+        {
+            try
+            {
+                using (var searcher = new ManagementObjectSearcher("SELECT MACAddress FROM Win32_NetworkAdapterConfiguration WHERE IPEnabled=true"))
+                {
+                    foreach (ManagementObject obj in searcher.Get())
+                    {
+                        string mac = obj["MACAddress"]?.ToString();
+                        if (!string.IsNullOrEmpty(mac)) return mac.Replace(":", "").ToUpper();
+                    }
+                }
+            }
+            catch { }
+            return "MAC_UNKNOWN";
+        }
+
+        private static string ComputeSHA256(string input)
+        {
+            using (SHA256 sha256 = SHA256.Create())
+            {
+                byte[] bytes = sha256.ComputeHash(Encoding.UTF8.GetBytes(input));
+                StringBuilder sb = new StringBuilder();
+                foreach (byte b in bytes) sb.Append(b.ToString("x2"));
+                return sb.ToString();
+            }
+        }
+    }
+
+    public class LicenseManager
+    {
+        private const string LicenseFileName = "license.dat";
+        private const string DeviceIdFileName = "device.id";
+        private const string SecretKey = "Wang2026Secret";
+        private readonly string _appDataPath;
+        private string _deviceId;
+
+        public LicenseManager()
+        {
+            _appDataPath = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+                "FileBatchPrinter");
+            Directory.CreateDirectory(_appDataPath);
+        }
+
+        public string GetDeviceId()
+        {
+            string deviceIdFile = Path.Combine(_appDataPath, DeviceIdFileName);
+            if (File.Exists(deviceIdFile))
+            {
+                _deviceId = File.ReadAllText(deviceIdFile).Trim();
+                return _deviceId;
+            }
+
+            _deviceId = DeviceIdGenerator.GetDeviceId();
+            File.WriteAllText(deviceIdFile, _deviceId);
+            return _deviceId;
+        }
+
+        public bool VerifyLicense(out DateTime expireDate, out int remainingDays)
+        {
+            expireDate = DateTime.MinValue;
+            remainingDays = 0;
+
+            string licenseFile = Path.Combine(_appDataPath, LicenseFileName);
+            if (!File.Exists(licenseFile)) return false;
+
+            try
+            {
+                string content = File.ReadAllText(licenseFile).Trim();
+                string[] parts = content.Split('|');
+                if (parts.Length != 3) return false;
+
+                string savedDeviceId = parts[0];
+                string authDateStr = parts[1];
+                string checkCode = parts[2];
+
+                if (savedDeviceId != _deviceId) return false;
+
+                string expectedCheck = ComputeCheckCode(savedDeviceId, authDateStr);
+                if (checkCode != expectedCheck) return false;
+
+                if (DateTime.TryParse(authDateStr, out DateTime authDate))
+                {
+                    var days = (DateTime.Now.Date - authDate.Date).Days;
+                    if (days <= 30)
+                    {
+                        expireDate = authDate.AddDays(30);
+                        remainingDays = 30 - days;
+                        return true;
+                    }
+                }
+            }
+            catch { }
+            return false;
+        }
+
+        public bool ActivateLicense(string licenseCode)
+        {
+            string expectedCode = GenerateLicenseCode();
+            if (licenseCode != expectedCode) return false;
+
+            string authDate = DateTime.Now.ToString("yyyy-MM-dd");
+            string checkCode = ComputeCheckCode(_deviceId, authDate);
+            string content = _deviceId + "|" + authDate + "|" + checkCode;
+
+            string licenseFile = Path.Combine(_appDataPath, LicenseFileName);
+            File.WriteAllText(licenseFile, content);
+
+            return true;
+        }
+
+        public string GenerateLicenseCode()
+        {
+            string yearMonth = DateTime.Now.ToString("yyyyMM");
+            string raw = yearMonth + SecretKey;
+            using (MD5 md5 = MD5.Create())
+            {
+                byte[] hash = md5.ComputeHash(Encoding.UTF8.GetBytes(raw));
+                StringBuilder sb = new StringBuilder();
+                for (int i = 0; i < 4; i++)
+                {
+                    sb.Append(hash[i].ToString("x2"));
+                }
+                return sb.ToString().ToUpper();
+            }
+        }
+
+        private string ComputeCheckCode(string deviceId, string authDate)
+        {
+            string raw = deviceId + "|" + authDate + "|" + SecretKey;
+            using (MD5 md5 = MD5.Create())
+            {
+                byte[] hash = md5.ComputeHash(Encoding.UTF8.GetBytes(raw));
+                StringBuilder sb = new StringBuilder();
+                for (int i = 0; i < 4; i++)
+                {
+                    sb.Append(hash[i].ToString("x2"));
+                }
+                return sb.ToString().ToUpper();
+            }
+        }
+    }
+
+    public class LicenseDialog : Form
+    {
+        private Label lblDeviceCode;
+        private Label lblStatus;
+        private Label lblExpireDate;
+        private TextBox txtLicenseCode;
+        private Button btnActivate;
+        private Button btnRefresh;
+        private Button btnClose;
+        private LicenseManager _licenseManager;
+        private string _deviceId;
+        private bool _isValid = false;
+        private DateTime _expireDate;
+        private int _remainingDays;
+
+        public bool IsValid => _isValid;
+        public DateTime ExpireDate => _expireDate;
+        public int RemainingDays => _remainingDays;
+
+        public LicenseDialog(LicenseManager licenseManager, string deviceId)
+        {
+            _licenseManager = licenseManager;
+            _deviceId = deviceId;
+
+            SetupUI();
+            CheckLicense();
+        }
+
+        private void SetupUI()
+        {
+            this.Text = "授权验证";
+            this.Size = new Size(450, 380);
+            this.StartPosition = FormStartPosition.CenterScreen;
+            this.FormBorderStyle = FormBorderStyle.FixedDialog;
+            this.MaximizeBox = false;
+            this.MinimizeBox = false;
+
+            int yOffset = 20;
+
+            Label lblTitle = new Label();
+            lblTitle.Text = "设备码:";
+            lblTitle.Location = new Point(20, yOffset);
+            lblTitle.Size = new Size(60, 23);
+            lblTitle.Font = new Font("微软雅黑", 9, FontStyle.Bold);
+
+            lblDeviceCode = new Label();
+            lblDeviceCode.Text = _deviceId;
+            lblDeviceCode.Location = new Point(90, yOffset);
+            lblDeviceCode.Size = new Size(320, 23);
+            lblDeviceCode.Font = new Font("Consolas", 9, FontStyle.Regular);
+            lblDeviceCode.BackColor = Color.WhiteSmoke;
+            lblDeviceCode.BorderStyle = BorderStyle.FixedSingle;
+            lblDeviceCode.TextAlign = ContentAlignment.MiddleLeft;
+
+            yOffset += 40;
+
+            Label lblStatusTitle = new Label();
+            lblStatusTitle.Text = "状态:";
+            lblStatusTitle.Location = new Point(20, yOffset);
+            lblStatusTitle.Size = new Size(60, 23);
+            lblStatusTitle.Font = new Font("微软雅黑", 9, FontStyle.Bold);
+
+            lblStatus = new Label();
+            lblStatus.Text = "正在验证...";
+            lblStatus.Location = new Point(90, yOffset);
+            lblStatus.Size = new Size(320, 23);
+            lblStatus.Font = new Font("微软雅黑", 9, FontStyle.Regular);
+            lblStatus.ForeColor = Color.Blue;
+
+            yOffset += 40;
+
+            Label lblExpireTitle = new Label();
+            lblExpireTitle.Text = "有效期:";
+            lblExpireTitle.Location = new Point(20, yOffset);
+            lblExpireTitle.Size = new Size(60, 23);
+            lblExpireTitle.Font = new Font("微软雅黑", 9, FontStyle.Bold);
+
+            lblExpireDate = new Label();
+            lblExpireDate.Text = "---";
+            lblExpireDate.Location = new Point(90, yOffset);
+            lblExpireDate.Size = new Size(320, 23);
+            lblExpireDate.Font = new Font("微软雅黑", 9, FontStyle.Regular);
+
+            yOffset += 50;
+
+            Label lblCodeTitle = new Label();
+            lblCodeTitle.Text = "授权码:";
+            lblCodeTitle.Location = new Point(20, yOffset);
+            lblCodeTitle.Size = new Size(60, 23);
+            lblCodeTitle.Font = new Font("微软雅黑", 9, FontStyle.Bold);
+
+            txtLicenseCode = new TextBox();
+            txtLicenseCode.Location = new Point(90, yOffset);
+            txtLicenseCode.Size = new Size(180, 23);
+            txtLicenseCode.Font = new Font("Consolas", 9, FontStyle.Regular);
+
+            btnActivate = new Button();
+            btnActivate.Text = "激活";
+            btnActivate.Location = new Point(280, yOffset);
+            btnActivate.Size = new Size(60, 25);
+            btnActivate.Click += BtnActivate_Click;
+
+            yOffset += 45;
+
+            Label lblTip = new Label();
+            lblTip.Text = "提示：请向管理员获取授权码，授权后有效期为30天。";
+            lblTip.Location = new Point(20, yOffset);
+            lblTip.Size = new Size(400, 40);
+            lblTip.Font = new Font("微软雅黑", 8, FontStyle.Italic);
+            lblTip.ForeColor = Color.Gray;
+
+            yOffset += 55;
+
+            btnRefresh = new Button();
+            btnRefresh.Text = "刷新";
+            btnRefresh.Location = new Point(220, yOffset);
+            btnRefresh.Size = new Size(80, 30);
+            btnRefresh.Click += BtnRefresh_Click;
+
+            btnClose = new Button();
+            btnClose.Text = "关闭";
+            btnClose.Location = new Point(330, yOffset);
+            btnClose.Size = new Size(80, 30);
+            btnClose.Click += (s, e) => this.Close();
+
+            this.Controls.Add(lblTitle);
+            this.Controls.Add(lblDeviceCode);
+            this.Controls.Add(lblStatusTitle);
+            this.Controls.Add(lblStatus);
+            this.Controls.Add(lblExpireTitle);
+            this.Controls.Add(lblExpireDate);
+            this.Controls.Add(lblCodeTitle);
+            this.Controls.Add(txtLicenseCode);
+            this.Controls.Add(btnActivate);
+            this.Controls.Add(lblTip);
+            this.Controls.Add(btnRefresh);
+            this.Controls.Add(btnClose);
+        }
+
+        private void CheckLicense()
+        {
+            bool valid = _licenseManager.VerifyLicense(out DateTime expireDate, out int remainingDays);
+
+            if (valid)
+            {
+                _isValid = true;
+                _expireDate = expireDate;
+                _remainingDays = remainingDays;
+
+                lblStatus.Text = "✓ 授权有效";
+                lblStatus.ForeColor = Color.Green;
+                lblExpireDate.Text = expireDate.ToString("yyyy-MM-dd") + " (剩余 " + remainingDays + " 天)";
+                lblExpireDate.ForeColor = remainingDays <= 7 ? Color.Orange : Color.Black;
+
+                Timer autoClose = new Timer();
+                autoClose.Interval = 1000;
+                autoClose.Tick += (s, e) =>
+                {
+                    autoClose.Stop();
+                    this.DialogResult = DialogResult.OK;
+                    this.Close();
+                };
+                autoClose.Start();
+            }
+            else
+            {
+                _isValid = false;
+                lblStatus.Text = "✗ 未授权或已过期";
+                lblStatus.ForeColor = Color.Red;
+                lblExpireDate.Text = "请输入授权码激活";
+            }
+        }
+
+        private void BtnActivate_Click(object sender, EventArgs e)
+        {
+            string code = txtLicenseCode.Text.Trim().ToUpper();
+            if (string.IsNullOrEmpty(code))
+            {
+                MessageBox.Show("请输入授权码！", "提示", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            if (_licenseManager.ActivateLicense(code))
+            {
+                MessageBox.Show("激活成功！授权有效期30天。", "成功", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                CheckLicense();
+            }
+            else
+            {
+                MessageBox.Show("授权码错误！", "激活失败", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+
+        private void BtnRefresh_Click(object sender, EventArgs e)
+        {
+            CheckLicense();
+        }
+    }
+
+    public partial class Form1 : Form
+    {
+        private List<string> filesList = new List<string>();
+        private readonly List<string> supportPrintExts = new List<string>();
+
+        private TextBox txtDirectory;
+        private Button btnScan;
+        private TextBox txtSearch;
+        private Button btnSearch;
+        private CheckedListBox clbFiles;
+        private Button btnSelectAll;
+        private Button btnSelectByExt;
+        private Button btnPrint;
+        private Label lblStatus;
+        private Label lblSelectedCount;
+        private Label lblAuthorVersion;
+        private Label lblEmail;
+        private Label lblExpireDate;
+
+        private LicenseManager _licenseManager;
+        private DateTime _expireDate;
+        private int _remainingDays;
+
+        public Form1()
+        {
+            supportPrintExts.AddRange(new string[] { ".txt", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".pdf", ".jpg", ".jpeg", ".png", ".bmp", ".tiff" });
+
+            _licenseManager = new LicenseManager();
+            string deviceId = _licenseManager.GetDeviceId();
+
+            using (var licenseDialog = new LicenseDialog(_licenseManager, deviceId))
+            {
+                licenseDialog.ShowDialog();
+                if (!licenseDialog.IsValid)
+                {
+                    Environment.Exit(0);
+                    return;
+                }
+                _expireDate = licenseDialog.ExpireDate;
+                _remainingDays = licenseDialog.RemainingDays;
+            }
+
+            InitializeComponent();
+            SetupUI();
+        }
+
+        private void InitializeComponent()
+        {
+            this.Text = "检验表批量打印工具";
+            this.Size = new Size(800, 590);
+            this.StartPosition = FormStartPosition.CenterScreen;
+        }
+
+        private void SetupUI()
+        {
+            Label lblDir = new Label();
+            lblDir.Text = "目录路径:";
+            lblDir.Location = new Point(12, 15);
+            lblDir.Size = new Size(70, 23);
+
+            txtDirectory = new TextBox();
+            txtDirectory.Location = new Point(88, 12);
+            txtDirectory.Size = new Size(540, 23);
+
+            btnScan = new Button();
+            btnScan.Text = "扫描";
+            btnScan.Location = new Point(634, 10);
+            btnScan.Size = new Size(75, 27);
+            btnScan.Click += BtnScan_Click;
+
+            Label lblSearch = new Label();
+            lblSearch.Text = "关键词:";
+            lblSearch.Location = new Point(12, 50);
+            lblSearch.Size = new Size(70, 23);
+
+            txtSearch = new TextBox();
+            txtSearch.Location = new Point(88, 47);
+            txtSearch.Size = new Size(460, 23);
+
+            btnSearch = new Button();
+            btnSearch.Text = "搜索";
+            btnSearch.Location = new Point(554, 45);
+            btnSearch.Size = new Size(75, 27);
+            btnSearch.Click += BtnSearch_Click;
+
+            Label lblFiles = new Label();
+            lblFiles.Text = "文件列表（勾选要打印的文件）:";
+            lblFiles.Location = new Point(12, 85);
+            lblFiles.Size = new Size(200, 23);
+
+            lblEmail = new Label();
+            lblEmail.Text = "Email: guoqiang.w@cn.interplex.com";
+            lblEmail.Location = new Point(500, 85);
+            lblEmail.Size = new Size(250, 23);
+            lblEmail.ForeColor = Color.Green;
+
+            clbFiles = new CheckedListBox();
+            clbFiles.Location = new Point(12, 110);
+            clbFiles.Size = new Size(760, 300);
+            clbFiles.CheckOnClick = true;
+            clbFiles.HorizontalScrollbar = true;
+            clbFiles.Format += (s, e) => { if (e.ListItem is string path) e.Value = Path.GetFileName(path); };
+            clbFiles.ItemCheck += ClbFiles_ItemCheck;
+
+            int bottomY = 420;
+
+            btnSelectAll = new Button();
+            btnSelectAll.Text = "全选";
+            btnSelectAll.Location = new Point(12, bottomY);
+            btnSelectAll.Size = new Size(75, 27);
+            btnSelectAll.Click += BtnSelectAll_Click;
+
+            btnSelectByExt = new Button();
+            btnSelectByExt.Text = "按后缀选择";
+            btnSelectByExt.Location = new Point(95, bottomY);
+            btnSelectByExt.Size = new Size(90, 27);
+            btnSelectByExt.Click += BtnSelectByExt_Click;
+
+            lblSelectedCount = new Label();
+            lblSelectedCount.Text = "已选择 0 个文件";
+            lblSelectedCount.Location = new Point(195, bottomY + 2);
+            lblSelectedCount.Size = new Size(120, 23);
+
+            lblAuthorVersion = new Label();
+            lblAuthorVersion.Text = "作者:王国强 Rev.A01";
+            lblAuthorVersion.Location = new Point(325, bottomY + 2);
+            lblAuthorVersion.Size = new Size(150, 23);
+            lblAuthorVersion.ForeColor = Color.DarkBlue;
+            lblAuthorVersion.Font = new Font("Segoe UI", 9, FontStyle.Bold);
+
+            lblExpireDate = new Label();
+            lblExpireDate.Text = "授权至:" + _expireDate.ToString("yyyy-MM-dd") + " (剩余 " + _remainingDays + " 天)";
+            lblExpireDate.Location = new Point(480, bottomY + 2);
+            lblExpireDate.Size = new Size(180, 23);
+            lblExpireDate.ForeColor = _remainingDays <= 7 ? Color.Orange : Color.Green;
+
+            btnPrint = new Button();
+            btnPrint.Text = "批量打印";
+            btnPrint.Location = new Point(690, bottomY);
+            btnPrint.Size = new Size(90, 27);
+            btnPrint.Click += BtnPrint_Click;
+
+            lblStatus = new Label();
+            lblStatus.Text = "就绪";
+            lblStatus.Location = new Point(12, bottomY + 40);
+            lblStatus.Size = new Size(760, 50);
+            lblStatus.BorderStyle = BorderStyle.Fixed3D;
+
+            this.Controls.Add(lblDir);
+            this.Controls.Add(txtDirectory);
+            this.Controls.Add(btnScan);
+            this.Controls.Add(lblSearch);
+            this.Controls.Add(txtSearch);
+            this.Controls.Add(btnSearch);
+            this.Controls.Add(lblFiles);
+            this.Controls.Add(lblEmail);
+            this.Controls.Add(clbFiles);
+            this.Controls.Add(btnSelectAll);
+            this.Controls.Add(btnSelectByExt);
+            this.Controls.Add(lblSelectedCount);
+            this.Controls.Add(lblAuthorVersion);
+            this.Controls.Add(lblExpireDate);
+            this.Controls.Add(btnPrint);
+            this.Controls.Add(lblStatus);
+        }
+
+        private void ClbFiles_ItemCheck(object sender, ItemCheckEventArgs e)
+        {
+            this.BeginInvoke((MethodInvoker)(() => { lblSelectedCount.Text = "已选择 " + clbFiles.CheckedItems.Count + " 个文件"; }));
+        }
+
+        private void BtnSelectAll_Click(object sender, EventArgs e)
+        {
+            if (clbFiles.Items.Count == 0) return;
+            bool allChecked = clbFiles.CheckedItems.Count == clbFiles.Items.Count;
+            for (int i = 0; i < clbFiles.Items.Count; i++) clbFiles.SetItemChecked(i, !allChecked);
+            btnSelectAll.Text = allChecked ? "全选" : "取消全选";
+        }
+
+        private void BtnSelectByExt_Click(object sender, EventArgs e)
+        {
+            if (clbFiles.Items.Count == 0)
+            {
+                MessageBox.Show("请先扫描目录！", "提示", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            string input = ShowInputDialog("请输入要选择的后缀名（多个用逗号或空格分隔）\n\n示例: pdf,jpg,ppt,xlsx", "按后缀选择文件");
+
+            if (string.IsNullOrWhiteSpace(input)) return;
+
+            string[] extensions = input.Split(new char[] { ',', ' ', ';' }, StringSplitOptions.RemoveEmptyEntries);
+            for (int i = 0; i < extensions.Length; i++)
+            {
+                string ext = extensions[i].Trim().ToLower();
+                if (!ext.StartsWith(".")) ext = "." + ext;
+                extensions[i] = ext;
+            }
+
+            int selectedCount = 0;
+            for (int i = 0; i < clbFiles.Items.Count; i++)
+            {
+                string filePath = clbFiles.Items[i] as string;
+                if (string.IsNullOrEmpty(filePath)) continue;
+
+                string fileExt = Path.GetExtension(filePath).ToLower();
+                if (extensions.Contains(fileExt))
+                {
+                    clbFiles.SetItemChecked(i, true);
+                    selectedCount++;
+                }
+            }
+
+            lblSelectedCount.Text = "已选择 " + clbFiles.CheckedItems.Count + " 个文件";
+            lblStatus.Text = "按后缀选择完成，共选中 " + selectedCount + " 个文件。";
+        }
+
+        private string ShowInputDialog(string prompt, string title)
+        {
+            Form dialog = new Form();
+            dialog.Text = title;
+            dialog.Size = new Size(400, 160);
+            dialog.StartPosition = FormStartPosition.CenterParent;
+            dialog.FormBorderStyle = FormBorderStyle.FixedDialog;
+            dialog.MaximizeBox = false;
+            dialog.MinimizeBox = false;
+
+            Label lblPrompt = new Label();
+            lblPrompt.Text = prompt;
+            lblPrompt.Location = new Point(12, 15);
+            lblPrompt.Size = new Size(360, 50);
+            lblPrompt.AutoSize = false;
+
+            TextBox txtInput = new TextBox();
+            txtInput.Location = new Point(12, 70);
+            txtInput.Size = new Size(360, 23);
+
+            Button btnOK = new Button();
+            btnOK.Text = "确定";
+            btnOK.Location = new Point(200, 100);
+            btnOK.Size = new Size(80, 25);
+            btnOK.DialogResult = DialogResult.OK;
+
+            Button btnCancel = new Button();
+            btnCancel.Text = "取消";
+            btnCancel.Location = new Point(290, 100);
+            btnCancel.Size = new Size(80, 25);
+            btnCancel.DialogResult = DialogResult.Cancel;
+
+            dialog.Controls.Add(lblPrompt);
+            dialog.Controls.Add(txtInput);
+            dialog.Controls.Add(btnOK);
+            dialog.Controls.Add(btnCancel);
+
+            dialog.AcceptButton = btnOK;
+            dialog.CancelButton = btnCancel;
+
+            if (dialog.ShowDialog() == DialogResult.OK)
+            {
+                return txtInput.Text.Trim();
+            }
+            return "";
+        }
+
+        private void BtnScan_Click(object sender, EventArgs e)
+        {
+            string dirPath = txtDirectory.Text.Trim();
+            if (string.IsNullOrEmpty(dirPath)) { MessageBox.Show("请输入目录路径！"); return; }
+            if (!Directory.Exists(dirPath)) { MessageBox.Show("目录不存在！"); return; }
+
+            filesList.Clear();
+            clbFiles.Items.Clear();
+            lblStatus.Text = "正在扫描...";
+
+            try
+            {
+                string[] files = Directory.GetFiles(dirPath, "*.*", SearchOption.AllDirectories);
+                int count = 0;
+                foreach (string file in files)
+                {
+                    string ext = Path.GetExtension(file).ToLower();
+                    if (supportPrintExts.Contains(ext))
+                    {
+                        filesList.Add(file);
+                        clbFiles.Items.Add(file);
+                        count++;
+                    }
+                    if (count % 10 == 0) Application.DoEvents();
+                }
+                lblStatus.Text = "扫描完成！共找到 " + filesList.Count + " 个可打印文件。";
+                lblSelectedCount.Text = "已选择 0 个文件";
+                btnSelectAll.Text = "全选";
+            }
+            catch (Exception ex)
+            {
+                filesList.Clear();
+                clbFiles.Items.Clear();
+                lblStatus.Text = "扫描出错: " + ex.Message;
+            }
+        }
+
+        private void BtnSearch_Click(object sender, EventArgs e)
+        {
+            if (filesList.Count == 0)
+            {
+                MessageBox.Show("请先扫描目录！", "提示", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            string keywords = txtSearch.Text.Trim();
+            if (string.IsNullOrEmpty(keywords))
+            {
+                clbFiles.Items.Clear();
+                foreach (string file in filesList) clbFiles.Items.Add(file);
+                lblStatus.Text = "已显示全部文件。";
+                return;
+            }
+
+            string normalized = keywords
+                .Replace('\u00A0', ' ')
+                .Replace('\u0009', ' ')
+                .Replace('\u000B', ' ')
+                .Replace('\u000C', ' ')
+                .Replace('\u2000', ' ')
+                .Replace('\u2001', ' ')
+                .Replace('\u2002', ' ')
+                .Replace('\u2003', ' ')
+                .Replace('\u2004', ' ')
+                .Replace('\u2005', ' ')
+                .Replace('\u2006', ' ')
+                .Replace('\u2007', ' ')
+                .Replace('\u2008', ' ')
+                .Replace('\u2009', ' ')
+                .Replace('\u200A', ' ')
+                .Replace('\u200B', ' ')
+                .Replace('\u3000', ' ');
+
+            string[] keywordList = normalized.Split(
+                new char[] { ' ', '\r', '\n', ',', ';' },
+                StringSplitOptions.RemoveEmptyEntries);
+
+            keywordList = keywordList.Distinct().ToArray();
+
+            if (keywordList.Length == 0)
+            {
+                MessageBox.Show("未识别到有效关键词！", "提示", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            List<string> results = new List<string>();
+            foreach (string file in filesList)
+            {
+                bool match = false;
+                foreach (string keyword in keywordList)
+                {
+                    if (file.IndexOf(keyword.Trim(), StringComparison.OrdinalIgnoreCase) >= 0)
+                    {
+                        match = true;
+                        break;
+                    }
+                }
+                if (match) results.Add(file);
+            }
+
+            clbFiles.Items.Clear();
+            foreach (string file in results) clbFiles.Items.Add(file);
+
+            lblStatus.Text = "搜索完成，关键词数：" + keywordList.Length + "，匹配文件数：" + results.Count;
+            lblSelectedCount.Text = "已选择 " + clbFiles.CheckedItems.Count + " 个文件";
+        }
+
+        private void PrintTextFile(string filePath)
+        {
+            string[] lines = File.ReadAllLines(filePath, Encoding.Default);
+            PrintDocument pd = new PrintDocument();
+            pd.PrintPage += (sender, e) =>
+            {
+                float yPos = 0;
+                int count = 0;
+                float leftMargin = e.MarginBounds.Left;
+                float topMargin = e.MarginBounds.Top;
+                while (count < lines.Length)
+                {
+                    yPos = topMargin + (count * 12);
+                    e.Graphics.DrawString(lines[count], new Font("宋体", 10), Brushes.Black, leftMargin, yPos);
+                    count++;
+                    if (yPos > e.MarginBounds.Bottom) { e.HasMorePages = true; return; }
+                }
+                e.HasMorePages = false;
+            };
+            pd.Print();
+        }
+
+        private void BtnPrint_Click(object sender, EventArgs e)
+        {
+            if (clbFiles.CheckedItems.Count == 0)
+            {
+                MessageBox.Show("请先勾选要打印的文件！", "提示", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            int success = 0, fail = 0;
+            lblStatus.Text = "开始提交打印任务...";
+            Application.DoEvents();
+
+            foreach (var item in clbFiles.CheckedItems)
+            {
+                string file = item as string;
+                try
+                {
+                    string ext = Path.GetExtension(file).ToLower();
+                    if (ext == ".txt")
+                    {
+                        PrintTextFile(file);
+                    }
+                    else
+                    {
+                        Process.Start(new ProcessStartInfo
+                        {
+                            FileName = file,
+                            Verb = "print",
+                            CreateNoWindow = true,
+                            UseShellExecute = true,
+                            WindowStyle = ProcessWindowStyle.Hidden
+                        });
+                    }
+                    success++;
+                    System.Threading.Thread.Sleep(1500);
+                }
+                catch (Exception ex)
+                {
+                    fail++;
+                    lblStatus.Text = "打印失败: " + Path.GetFileName(file) + " - " + ex.Message;
+                    Application.DoEvents();
+                }
+            }
+
+            lblStatus.Text = "打印任务提交完成！成功: " + success + ", 失败: " + fail + "。";
+            MessageBox.Show("打印完成！成功 " + success + " 个，失败 " + fail + " 个。", "完成", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
+    }
+
+    internal static class Program
+    {
+        [STAThread]
+        static void Main()
+        {
+            Application.EnableVisualStyles();
+            Application.SetCompatibleTextRenderingDefault(false);
+            Application.Run(new Form1());
+        }
+    }
+}
